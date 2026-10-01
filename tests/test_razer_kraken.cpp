@@ -27,6 +27,33 @@ namespace {
     const auto CHARGING_1     = packet("020260000000050080802a0101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004c00");
     const auto NOTIFICATION   = packet("020a60560000050080802a0201010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001100");
 
+    const auto SIDETONE_ON  = packet("02006000000005000080980001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007f00");
+    const auto SIDETONE_OFF = packet("02006000000005000080980001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007e00");
+    const std::array SIDETONE_LEVELS {
+        packet("02006000000005000080990001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007f00"),
+        packet("02006000000005000080990001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007e00"),
+        packet("02006000000005000080990001020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007d00"),
+        packet("02006000000005000080990001030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007c00"),
+        packet("02006000000005000080990001040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b00"),
+        packet("02006000000005000080990001050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007a00"),
+        packet("02006000000005000080990001060000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007900"),
+        packet("02006000000005000080990001070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007800"),
+        packet("02006000000005000080990001080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007700"),
+        packet("02006000000005000080990001090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007600"),
+        packet("020060000000050000809900010a0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007500"),
+        packet("020060000000050000809900010b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007400"),
+        packet("020060000000050000809900010c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007300"),
+        packet("020060000000050000809900010d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007200"),
+        packet("020060000000050000809900010e0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007100"),
+        packet("020060000000050000809900010f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007000")
+    };
+    const auto ACK_98 = packet("0202600000000500808098010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff00");
+    const auto ACK_99 = packet("0202600000000500808099010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000fe00");
+
+    const auto LIGHTS_OFF = packet("02006000000005000080c10001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002700");
+    const auto LIGHTS_ON  = packet("02006000000005000080c10001400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006700");
+    const auto ACK_C1     = packet("02026000000005008080c1010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a600");
+
     class KrakenMockHID final : public HIDInterface {
     public:
         std::deque<Result<std::vector<uint8_t>>> reads;
@@ -153,6 +180,67 @@ void runAllRazerKrakenTests()
         short_response.resize(13);
         hid.reads.emplace_back(short_response);
         require(device.getBattery(nullptr).hasError(), "Truncated matching response should fail");
+    }
+    // Finite captured settings: never synthesize unobserved HID level bytes.
+    for (int level = 0; level <= 128; ++level) {
+        KrakenMockHID hid;
+        TestableKraken device(hid);
+        hid.reads.emplace_back(NOTIFICATION);
+        hid.reads.emplace_back(ACK_98);
+        if (level)
+            hid.reads.emplace_back(ACK_99);
+        auto result = device.setSidetone(nullptr, static_cast<uint8_t>(level));
+        require(result.hasValue(), "Captured sidetone acknowledgments should succeed");
+        const int native = level ? std::max(1, level * 15 / 128) : 0;
+        const int actual = level ? (native * 128 + 14) / 15 : 0;
+        require(result->current_level == actual && result->device_level == native,
+            "Report the actual quantized level");
+        require(!level || actual * 15 / 128 == native, "Reported level should select the same captured packet");
+        require(result->is_muted == (level == 0), "Zero should disable sidetone");
+        require(hid.writes[0] == (level ? SIDETONE_ON : SIDETONE_OFF), "Toggle must exactly match capture");
+        require(hid.writes.size() == (level ? 2 : 1), "Send only the required captured settings");
+        if (level)
+            require(hid.writes[1] == SIDETONE_LEVELS[native], "Level must exactly match capture");
+    }
+    {
+        KrakenMockHID hid;
+        TestableKraken device(hid);
+        hid.reads.emplace_back(ACK_98);
+        hid.reads.emplace_back(DeviceError::timeout("Setting timeout"));
+        hid.reads.emplace_back(ACK_98);
+        require(device.setSidetone(nullptr, 128).hasError(), "Level timeout should fail");
+        require(hid.writes.size() == 3 && hid.writes.back() == SIDETONE_OFF, "Restore OFF when level setting fails");
+    }
+    {
+        KrakenMockHID hid;
+        TestableKraken device(hid);
+        auto bad_ack = ACK_98;
+        bad_ack[13]  = 1;
+        hid.reads.emplace_back(bad_ack);
+        hid.reads.emplace_back(ACK_98);
+        require(device.setSidetone(nullptr, 64).hasError(), "Unknown acknowledgment must not report success");
+        require(hid.writes.back() == SIDETONE_OFF, "Restore OFF after uncertain toggle acknowledgment");
+    }
+    {
+        KrakenMockHID hid;
+        TestableKraken device(hid);
+        require(device.setSidetone(nullptr, 129).hasError(), "Reject out of range sidetone");
+        require(hid.writes.empty(), "Reject invalid input before any write");
+    }
+    for (bool on : { false, true }) {
+        KrakenMockHID hid;
+        TestableKraken device(hid);
+        hid.reads.emplace_back(NOTIFICATION);
+        hid.reads.emplace_back(ACK_C1);
+        auto result = device.setLights(nullptr, on);
+        require(result.hasValue() && result->enabled == on, "Captured light acknowledgment should succeed");
+        require(hid.writes.size() == 1 && hid.writes[0] == (on ? LIGHTS_ON : LIGHTS_OFF), "Lights output must exactly match capture");
+    }
+    {
+        KrakenMockHID hid;
+        TestableKraken device(hid);
+        require(device.setLights(nullptr, false).hasError(), "Missing light acknowledgment should fail");
+        require(hid.writes.size() == 1, "Light timeout should not resend");
     }
 }
 } // namespace headsetcontrol::testing

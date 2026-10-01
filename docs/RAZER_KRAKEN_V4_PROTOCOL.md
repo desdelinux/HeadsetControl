@@ -54,3 +54,48 @@ a fixed deadline. It checks the full response length and value range.
 - Retain minimal captures for the PR.
 - Linux HIDAPI hidraw has been tested; HIDAPI on macOS/Windows
   has not been tested on hardware.
+
+## Sidetone (follow-up branch)
+
+Synapse toggles monitoring with captured opcode `98` (payload byte13=1/0).
+It sets the native level with opcode `99`. A fifth capture of actual Synapse
+slider actions on 2026-09-30 observed every native level from 0 through 15.
+The implementation stores all 16 complete packets, including literal trailing
+bytes. No checksum or additional native value is generated.
+
+HeadsetControl's 0..128 input selects OFF for 0. Positive requests select
+`max(1, floor(input * 15 / 128))`; the returned level is
+`ceil(native * 128 / 15)`, so reapplying it selects the same packet. This is an
+ordinal mapping of captured settings, not a measurement of acoustic gain or
+an assertion that the Synapse slider percentage is linear in gain.
+
+On Linux the user heard sidetone only while USB microphone capture was active.
+A PipeWire input stream opened with pw-record measured and discarded audio;
+no software loopback/playback was used. Mic must be extended and unmuted.
+The command alone does not keep the USB capture endpoint open; a voice app
+or other capture client must do that. ACKs alone are not acoustic validation.
+
+Second capture2026-09-30: FULL frame8225, repeated8541; UI50 restored8663;
+OFF8739. First captureON19610,HALF19618,OFF21508. On a setting error the
+implementation attempts to restore OFF with the captured OFF packet.
+
+Battery PR remains separate. Noise cancellation is still not identified.
+
+## Lighting toggle (follow-up branch)
+
+The captured brightness command uses opcodec1, byte13=0 forOFF and64 for
+Synapse25%. The boolean lights API enables this captured25% brightness and
+disables with the captured0 packet. It does not preserve/read arbitrary
+brightness, implement colors/effects, or use LampArray. User confirmed both
+physicalOFF and re-illumination on Linux with these exact requests. Responses
+match the captured zero acknowledgment; no checksum/range is synthesized.
+
+## Control evidence
+
+[Filtered capture](razer_kraken_v4_controls_evidence.pcap) contains only HID
+control/interrupt transactions for sidetone and brightness from three captures.
+The [manifest](razer_kraken_v4_controls_evidence.json) records original frame
+numbers, capture hashes and all 16 literal sidetone packets. Audio/isochronous
+transfers and other USB devices are excluded. Acoustic validation covers
+sidetone ON/FULL and OFF, and physical light OFF/ON25%; individual intermediate
+sidetone levels have capture and unit-test evidence, not separate listening tests.
